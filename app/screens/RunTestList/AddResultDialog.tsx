@@ -55,6 +55,8 @@ export const AddResultDialog = ({
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const {toast} = useToast()
   const submittedRef = useRef(false)
+  const uploadCountRef = useRef(0)
+  const isDialogOpenRef = useRef(false)
 
   // Re-prefill from props each time the dialog opens, so a cancelled edit
   // never leaks a stale draft into the next open, and reopening to amend an
@@ -63,6 +65,7 @@ export const AddResultDialog = ({
   // already-uploaded attachments from S3 instead of leaving them orphaned.
   const onDialogOpenChange = (open: boolean) => {
     setIsDialogOpen(open)
+    isDialogOpenRef.current = open
     if (open) {
       setStatus(currStatus ?? '')
       setComment(currComment ?? '')
@@ -91,6 +94,7 @@ export const AddResultDialog = ({
   }, [isAddResultEnabled])
 
   const uploadFile = async (file: File) => {
+    uploadCountRef.current += 1
     setIsUploadingAttachment(true)
     try {
       const formData = new FormData()
@@ -110,14 +114,29 @@ export const AddResultDialog = ({
         return
       }
 
-      setAttachments((prev) => [...prev, result.data.key])
+      const key = result.data.key
+      if (!isDialogOpenRef.current) {
+        // Dialog closed before this upload resolved: it was never surfaced
+        // to the user and won't be caught by the close-time cleanup loop
+        // (which only iterates attachments already in state), so clean it
+        // up here instead of leaving it orphaned in S3.
+        fetch(`/${API.DeleteAttachment}`, {
+          method: 'DELETE',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({key}),
+        }).catch(() => {})
+        return
+      }
+
+      setAttachments((prev) => [...prev, key])
     } catch (error) {
       toast({
         variant: 'destructive',
         description: 'Failed to upload attachment',
       })
     } finally {
-      setIsUploadingAttachment(false)
+      uploadCountRef.current -= 1
+      setIsUploadingAttachment(uploadCountRef.current > 0)
     }
   }
 
