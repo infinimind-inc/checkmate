@@ -52,6 +52,7 @@ export const AddResultDialog = ({
   const [shouldAnimate, setShouldAnimate] = useState(false)
   const [attachments, setAttachments] = useState<string[]>([])
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false)
+  const [isDialogOpen, setIsDialogOpen] = useState(false)
   const {toast} = useToast()
   const submittedRef = useRef(false)
 
@@ -61,6 +62,7 @@ export const AddResultDialog = ({
   // without submitting (Cancel, Escape, overlay click), delete any
   // already-uploaded attachments from S3 instead of leaving them orphaned.
   const onDialogOpenChange = (open: boolean) => {
+    setIsDialogOpen(open)
     if (open) {
       setStatus(currStatus ?? '')
       setComment(currComment ?? '')
@@ -88,11 +90,7 @@ export const AddResultDialog = ({
     }
   }, [isAddResultEnabled])
 
-  const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
-
+  const uploadFile = async (file: File) => {
     setIsUploadingAttachment(true)
     try {
       const formData = new FormData()
@@ -122,6 +120,44 @@ export const AddResultDialog = ({
       setIsUploadingAttachment(false)
     }
   }
+
+  const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    await uploadFile(file)
+  }
+
+  // Guarded on isDialogOpen so a paste anywhere on the page doesn't attach
+  // images while this dialog is closed. Only preventDefault when an image
+  // was actually found, so pasting text into the Comment field elsewhere in
+  // the dialog is unaffected.
+  useEffect(() => {
+    if (!isDialogOpen) return
+
+    const onPaste = (event: ClipboardEvent) => {
+      const images = Array.from(event.clipboardData?.items ?? [])
+        .filter((item) => item.type.startsWith('image/'))
+        .map((item, index) => {
+          const blob = item.getAsFile()
+          return blob
+            ? new File([blob], `pasted-image-${Date.now()}-${index}.png`, {
+                type: item.type,
+              })
+            : null
+        })
+        .filter((file): file is File => file !== null)
+
+      if (images.length === 0) return
+      event.preventDefault()
+      images.forEach((file) => {
+        uploadFile(file)
+      })
+    }
+
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [isDialogOpen])
 
   const removeAttachment = (index: number) => {
     const key = attachments[index]
@@ -302,7 +338,8 @@ export const AddResultDialog = ({
               </div>
             )}
             <p className="pt-1 text-xs text-slate-500">
-              Optional: Attach one or more screenshots
+              Optional: Attach one or more screenshots, or paste an image
+              with Cmd/Ctrl+V
             </p>
           </div>
         </div>
