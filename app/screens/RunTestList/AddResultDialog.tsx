@@ -71,6 +71,11 @@ export const AddResultDialog = ({
     setIsDialogOpen(open)
     if (open) {
       sessionIdRef.current += 1
+      // Discard any in-flight-upload bookkeeping from a previous, now-stale
+      // session: that session's uploads are no longer allowed to affect
+      // this session's Submit/"Uploading..." state (see uploadFile).
+      uploadCountRef.current = 0
+      setIsUploadingAttachment(false)
       setStatus(currStatus ?? '')
       setComment(currComment ?? '')
       setAttachments([])
@@ -112,10 +117,15 @@ export const AddResultDialog = ({
       const result = await response.json()
 
       if (!response.ok || result?.error) {
-        toast({
-          variant: 'destructive',
-          description: result?.error ?? 'Failed to upload attachment',
-        })
+        // A stale session's failure should be silent: the user isn't
+        // looking at this upload anymore, so surfacing a toast for it
+        // would be confusing noise in whatever session is now open.
+        if (sessionId === sessionIdRef.current) {
+          toast({
+            variant: 'destructive',
+            description: result?.error ?? 'Failed to upload attachment',
+          })
+        }
         return
       }
 
@@ -137,13 +147,23 @@ export const AddResultDialog = ({
 
       setAttachments((prev) => [...prev, key])
     } catch (error) {
-      toast({
-        variant: 'destructive',
-        description: 'Failed to upload attachment',
-      })
+      if (sessionId === sessionIdRef.current) {
+        toast({
+          variant: 'destructive',
+          description: 'Failed to upload attachment',
+        })
+      }
     } finally {
-      uploadCountRef.current -= 1
-      setIsUploadingAttachment(uploadCountRef.current > 0)
+      // Only touch the counter/flag for uploads that are still part of the
+      // current session. A stale upload's counter contribution was already
+      // discarded by the hard reset when the new session opened, so
+      // decrementing here for a stale upload would push the count negative
+      // and could incorrectly clear isUploadingAttachment for a real
+      // in-flight upload belonging to the current session.
+      if (sessionId === sessionIdRef.current) {
+        uploadCountRef.current = Math.max(0, uploadCountRef.current - 1)
+        setIsUploadingAttachment(uploadCountRef.current > 0)
+      }
     }
   }
 
