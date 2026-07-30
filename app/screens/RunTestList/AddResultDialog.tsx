@@ -56,7 +56,11 @@ export const AddResultDialog = ({
   const {toast} = useToast()
   const submittedRef = useRef(false)
   const uploadCountRef = useRef(0)
-  const isDialogOpenRef = useRef(false)
+  // Identifies the current dialog "open session". Incremented every time the
+  // dialog opens so that an in-flight upload started in a previous session
+  // can tell, when it resolves, whether it's still part of the session that
+  // started it (as opposed to merely "the dialog happens to be open again").
+  const sessionIdRef = useRef(0)
 
   // Re-prefill from props each time the dialog opens, so a cancelled edit
   // never leaks a stale draft into the next open, and reopening to amend an
@@ -65,8 +69,8 @@ export const AddResultDialog = ({
   // already-uploaded attachments from S3 instead of leaving them orphaned.
   const onDialogOpenChange = (open: boolean) => {
     setIsDialogOpen(open)
-    isDialogOpenRef.current = open
     if (open) {
+      sessionIdRef.current += 1
       setStatus(currStatus ?? '')
       setComment(currComment ?? '')
       setAttachments([])
@@ -94,6 +98,7 @@ export const AddResultDialog = ({
   }, [isAddResultEnabled])
 
   const uploadFile = async (file: File) => {
+    const sessionId = sessionIdRef.current
     uploadCountRef.current += 1
     setIsUploadingAttachment(true)
     try {
@@ -115,11 +120,13 @@ export const AddResultDialog = ({
       }
 
       const key = result.data.key
-      if (!isDialogOpenRef.current) {
-        // Dialog closed before this upload resolved: it was never surfaced
-        // to the user and won't be caught by the close-time cleanup loop
+      if (sessionId !== sessionIdRef.current) {
+        // Dialog was closed and/or reopened into a new session before this
+        // upload resolved: it was never surfaced to the user in this
+        // session and won't be caught by the close-time cleanup loop
         // (which only iterates attachments already in state), so clean it
-        // up here instead of leaving it orphaned in S3.
+        // up here instead of leaking it into an unrelated session or
+        // leaving it orphaned in S3.
         fetch(`/${API.DeleteAttachment}`, {
           method: 'DELETE',
           headers: {'Content-Type': 'application/json'},
