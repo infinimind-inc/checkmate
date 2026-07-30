@@ -61,6 +61,14 @@ export const AddResultDialog = ({
   // can tell, when it resolves, whether it's still part of the session that
   // started it (as opposed to merely "the dialog happens to be open again").
   const sessionIdRef = useRef(0)
+  // Live open/closed signal, set synchronously (unlike isDialogOpen state)
+  // so an in-flight upload's resolution handler can tell whether the dialog
+  // is still open right now, not just whether its session id is unchanged.
+  // sessionIdRef alone isn't enough: closing the dialog doesn't change it,
+  // so an upload started before Cancel/close would otherwise look "current"
+  // when it resolves after close, leaking its attachment key into state
+  // with nothing left to ever clean it up.
+  const isDialogOpenRef = useRef(false)
 
   // Re-prefill from props each time the dialog opens, so a cancelled edit
   // never leaks a stale draft into the next open, and reopening to amend an
@@ -69,6 +77,7 @@ export const AddResultDialog = ({
   // already-uploaded attachments from S3 instead of leaving them orphaned.
   const onDialogOpenChange = (open: boolean) => {
     setIsDialogOpen(open)
+    isDialogOpenRef.current = open
     if (open) {
       sessionIdRef.current += 1
       // Discard any in-flight-upload bookkeeping from a previous, now-stale
@@ -104,6 +113,13 @@ export const AddResultDialog = ({
 
   const uploadFile = async (file: File) => {
     const sessionId = sessionIdRef.current
+    // Stale if either a new session has started, or the dialog has been
+    // closed (and possibly not reopened) since this upload began. Either
+    // way, the user isn't looking at this upload's session anymore.
+    // sessionIdRef alone can't catch "closed, never reopened": closing
+    // doesn't bump the session id, so it would otherwise still look current.
+    const isUploadStale = () =>
+      sessionId !== sessionIdRef.current || !isDialogOpenRef.current
     uploadCountRef.current += 1
     setIsUploadingAttachment(true)
     try {
@@ -117,10 +133,10 @@ export const AddResultDialog = ({
       const result = await response.json()
 
       if (!response.ok || result?.error) {
-        // A stale session's failure should be silent: the user isn't
-        // looking at this upload anymore, so surfacing a toast for it
-        // would be confusing noise in whatever session is now open.
-        if (sessionId === sessionIdRef.current) {
+        // A stale upload's failure should be silent: surfacing a toast for
+        // it would be confusing noise in whatever session (if any) is now
+        // open.
+        if (!isUploadStale()) {
           toast({
             variant: 'destructive',
             description: result?.error ?? 'Failed to upload attachment',
@@ -130,7 +146,7 @@ export const AddResultDialog = ({
       }
 
       const key = result.data.key
-      if (sessionId !== sessionIdRef.current) {
+      if (isUploadStale()) {
         // Dialog was closed and/or reopened into a new session before this
         // upload resolved: it was never surfaced to the user in this
         // session and won't be caught by the close-time cleanup loop
@@ -147,7 +163,7 @@ export const AddResultDialog = ({
 
       setAttachments((prev) => [...prev, key])
     } catch (error) {
-      if (sessionId === sessionIdRef.current) {
+      if (!isUploadStale()) {
         toast({
           variant: 'destructive',
           description: 'Failed to upload attachment',
@@ -155,12 +171,12 @@ export const AddResultDialog = ({
       }
     } finally {
       // Only touch the counter/flag for uploads that are still part of the
-      // current session. A stale upload's counter contribution was already
-      // discarded by the hard reset when the new session opened, so
+      // current, open session. A stale upload's counter contribution was
+      // already discarded by the hard reset when the new session opened, so
       // decrementing here for a stale upload would push the count negative
       // and could incorrectly clear isUploadingAttachment for a real
       // in-flight upload belonging to the current session.
-      if (sessionId === sessionIdRef.current) {
+      if (!isUploadStale()) {
         uploadCountRef.current = Math.max(0, uploadCountRef.current - 1)
         setIsUploadingAttachment(uploadCountRef.current > 0)
       }
